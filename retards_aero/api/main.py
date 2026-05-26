@@ -1,0 +1,238 @@
+# api/main.py
+
+import os
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Depends
+import mlflow.pyfunc
+import mlflow
+import mlflow.catboost
+import mlflow.sklearn
+from catboost import Pool
+import pandas as pd
+from datetime import datetime, timedelta
+import uvicorn
+import warnings
+from src.comparison import match_predictions_with_reals, calculate_metrics
+from src.fetcher import (
+    fetch_real_flights_from_aerodatabox,
+    fetch_mouvements_raw,
+    fetch_and_save_meteo_raw,
+    load_json_to_dataframe,
+    load_meteo_json_to_dataframe,
+)
+from src.fetcher_vols import _fetch_vols
+from src.fetcher_meteo import _fetch_meteo
+from src.save_to import save_to_s3
+from src.load_from import load_from_s3
+from src.merge_vols_meteo import merge_vols_meteo, merged_to_departures_dataframe, merged_to_arrivals_dataframe 
+
+from src.features import enrich_aircraft_features, add_holiday_features
+from api.schemas import PredictionRequest, PredictionResponse, SinglePrediction
+from src.data_cleaning import clean_flight_data, clean_flight_data_pred
+import numpy as np
+import boto3
+import json
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Dict, Any
+from src.model_loader import load_model_and_encoder, load_model_no_target_encoder
+from src.predict import predict_delays
+from contextlib import asynccontextmanager
+import io
+
+load_dotenv()
+
+#########################
+import json
+
+def _show_data(data: dict, title: str = "Données"):
+    """Affiche proprement le contenu de testh / hist / future"""
+    print(f"\n=== {title} ===")
+    print(f"Nombre d'entrées : {len(data)}")
+    print(json.dumps(data, indent=2, ensure_ascii=False)[:1500])  # limite à ~1500 chars
+    print("..." if len(str(data)) > 1500 else "")
+    print(f"=== Fin {title} ===\n")
+
+###########################
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup : on charge le modèle une seule fois
+    print("Démarrage de l'API - Chargement du modèle...")
+    try:
+        model = load_model_no_target_encoder(
+            alias="champion"
+        )  # Cela charge et met en cache
+        print("Modèle prêt pour les prédictions")
+    except Exception as e:
+        print(f"Erreur critique au démarrage : {e}")
+        # Tu peux décider si tu veux continuer ou arrêter
+    yield
+    # Shutdown (optionnel)
+    print("Arrêt de l'API")
+
+
+app = FastAPI(title="PPML Flight Delay Prediction API", lifespan=lifespan)
+
+
+class PredictionRequest(BaseModel):
+    data: List[Dict[str, Any]]
+
+@app.post("/predict_departures")
+async def predict_flights(
+    request: PredictionRequest, model=Depends(load_model_no_target_encoder)
+):
+    try:
+        df_input = pd.DataFrame(request.data)
+        if df_input.empty:
+            raise HTTPException(status_code=400, detail="Aucune donnée fournie")
+        print("=" * 80)
+        print(f"[DEBUG] Données reçues de Streamlit : {df_input.shape[0]} lignes")
+        print(f"[DEBUG] Colonnes reçues ({len(df_input.columns)}) :")
+        print(list(df_input.columns))
+        print("=" * 80)
+
+        # APPEL prediction
+        result_df = predict_delays(df_input, model=model)
+
+        response = result_df[
+            [
+                "icao",
+                "type",
+                "airline_name",
+                "aircraft_model",
+                "dep_hour",
+                "period_of_day",
+                "flight_number",
+                "scheduled_utc",
+                "predicted_delay_minutes",
+            ]
+        ].to_dict(orient="records")
+
+        return {"status": "success", "predictions": response}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/")
+async def root():
+    return {"message": "Projet Flight Delay Prediction API est démmarré"}
+
+# ====================== QUCK CHECKS FETCH ========================
+def _quick_vols_check(data: dict, name: str):
+    """Check rapide et concis"""
+    if not data:
+        return {"error": f"{name} vide"}
+
+    flights_per_entry = [len(v) for v in data.values()]
+    
+    return {
+        "entries": len(data),                                 # nombre de clés (airport_jour)
+        "total_flights": sum(flights_per_entry),
+        "min_flights_per_entry": min(flights_per_entry),
+        "max_flights_per_entry": max(flights_per_entry),
+        "avg_flights_per_entry": round(sum(flights_per_entry) / len(flights_per_entry), 0),
+        "empty_entries": sum(0 for v in data.values() if len(v) == 0)
+    }
+
+def _quick_meteo_check(data: dict, name: str):
+    """Check rapide"""
+    if not data:
+        return {"error": f"{name} vide"}
+    hours = sum(len(v.get("hourly", {}).get("time", [])) for v in data.values())
+    return {
+        "entries": len(data),
+        "total_hours": hours,
+        "avg_hours_per_entry": round(hours / len(data), 1) if data else 0
+    }
+
+# ====================== ENDPOINTS ======================
+@app.get("/create_datasets_train")
+async def create_datasets_train():
+    """ 
+    fetch vols (departs et arrivées)
+    fetch meteo 
+    fusion dans un même fichier json
+    → sauvegarde sur s3
+    generation de 2 datasets .parquet:
+        - 1 dataset departs
+        - 1 dataset arrivées
+    → sauvegarde sur s3
+    """
+    start = datetime.now()
+    today = datetime.now().date()
+    run_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+    # Dates pour les datas : 180 jours (meteo a 181 pour gérer la meteo - 3 heure / au vol)
+    start_vols = today - timedelta(days=180)
+    end_vols = today - timedelta(days=1)
+    start_meteo = today - timedelta(days=181)
+    end_meteo = today - timedelta(days=1)
+
+    # 1. Fetch
+    vols_data = _fetch_vols(start_vols, end_vols)
+    meteo_data = _fetch_meteo(start_meteo, end_meteo)
+
+
+    # 2. Sauvegarde + Fusion
+    s3_json_ok = False
+    s3_parquet_ok = False
+    try:
+        # Vols raw
+        vols_bytes = json.dumps(vols_data, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+        save_to_s3(vols_bytes, f"raw/merged_meteo_vols/{run_id}", f"vols_{run_id}.json")
+
+        # Meteo raw
+        meteo_bytes = json.dumps(meteo_data, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+        save_to_s3(meteo_bytes, f"raw/merged_meteo_vols/{run_id}", f"meteo_{run_id}.json")
+
+        # Fusion
+        merged = merge_vols_meteo(vols_data, meteo_data)
+
+        # Merged
+        merged_bytes = json.dumps(merged, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+        s3_json_ok = save_to_s3(merged_bytes, f"raw/merged_meteo_vols/{run_id}", f"merged_vols_meteo_{run_id}.json")
+        
+        #parquet
+        #df = merged_to_dataframe(merged)
+        #buffer = io.BytesIO()
+        #df.to_parquet(buffer, index=False, compression="gzip")
+        #s3_parquet_ok  = save_to_s3(buffer.getvalue(), f"processed/train/{run_id}", f"base_dataset_train{run_id}.parquet")
+
+        # === DÉPARTS ===
+        df_depart = merged_to_departures_dataframe(merged)
+        buffer = io.BytesIO()
+        df_depart.to_parquet(buffer, index=False, compression="gzip")
+        save_to_s3(buffer.getvalue(), f"processed/train/{run_id}", f"base_dataset_train_departures_{run_id}.parquet")
+
+        # === ARRIVÉES ===
+        df_arrive = merged_to_arrivals_dataframe(merged)
+        buffer = io.BytesIO()
+        df_arrive.to_parquet(buffer, index=False, compression="gzip")
+        save_to_s3(buffer.getvalue(), f"processed/train/{run_id}", f"base_dataset_train_arrivals_{run_id}.parquet")
+
+    except Exception as e:
+        print(f"Erreur lors de la création du dataset train : {e}")
+
+    duration = (datetime.now() - start).total_seconds()
+
+    return {
+        "status": "success",
+        "type": "test_dataset_train_raw",
+        "run_id": run_id,
+        "vols_entries": len(vols_data) if vols_data else 0,
+        "meteo_entries": len(meteo_data) if meteo_data else 0,
+        "merged_entries": len(merged) if merged else 0,
+        "execution_time_sec": round(duration, 2),
+        "s3_json_saved": s3_json_ok,
+        "s3_parquet_saved": s3_parquet_ok
+    }
+
+
+# ================================== FIN TEST MERGE VOL ET METEO
+
+# MAIN
+if __name__ == "__main__":
+    uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=True)
