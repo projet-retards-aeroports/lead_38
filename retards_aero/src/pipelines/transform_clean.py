@@ -1,9 +1,13 @@
+import os
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
 import argparse
 import pandas as pd
 import io
-from src.load_from import load_from_s3
-from src.save_to import save_to_s3
-
+from custom_libs.load_from import load_from_s3
+from custom_libs.save_to import save_to_s3
+print("Bucket détecté :", os.getenv("BUCKET"))
 
 def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Supprime les préfixes arr_ et dep_"""
@@ -68,9 +72,9 @@ def filter_outliers(df: pd.DataFrame) -> pd.DataFrame:
     df["revised_utc"] = pd.to_datetime(df["revised_utc"], errors="coerce", utc=True)
     
     df["delay_minutes"] = (df["revised_utc"] - df["scheduled_utc"]).dt.total_seconds() / 60
-    df["delay_minutes"] = df["delay_minutes"].clip(lower=-120, upper=180)
+    df["delay_minutes"] = df["delay_minutes"].clip(lower=-30, upper=150)
     
-    print(f"   - Délais clippés entre -120 et +180 minutes")
+    print(f"   - Délais clippés entre -30 et +150 minutes")
     return df
 
 
@@ -78,10 +82,11 @@ def clean_data(run_id: str, is_future: bool = False):
     print(f"=== Nettoyage {'FUTUR' if is_future else 'HISTORIQUE'} - Run ID: {run_id} ===\n")
     
     folder = "prediction" if is_future else "train"
-    prefix = "base_dataset_prediction" if is_future else "final"
+    prefix = "base_dataset_prediction" if is_future else "base_dataset_train"
     
     # === Arrivées ===
     print("→ Nettoyage Arrivées...")
+    print(f"   - Chargement depuis S3 : processed/{folder}/{run_id}/{prefix}_arrivals_{run_id}.parquet")
     arrive_bytes = load_from_s3(f"processed/{folder}/{run_id}", 
                                f"{prefix}_arrivals_{run_id}.parquet")
     df_arrive = pd.read_parquet(io.BytesIO(arrive_bytes))
@@ -99,6 +104,7 @@ def clean_data(run_id: str, is_future: bool = False):
     
     # === Départs ===
     print("→ Nettoyage Départs...")
+    print(f"   - Chargement depuis S3 : processed/{folder}/{run_id}/{prefix}_departures_{run_id}.parquet")
     depart_bytes = load_from_s3(f"processed/{folder}/{run_id}", 
                                f"{prefix}_departures_{run_id}.parquet")
     df_depart = pd.read_parquet(io.BytesIO(depart_bytes))

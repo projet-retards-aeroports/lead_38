@@ -6,8 +6,8 @@ from datetime import datetime
 import holidays
 from vacances_scolaires_france import SchoolHolidayDates
 
-from src.load_from import load_from_s3
-from src.save_to import save_to_s3
+from custom_libs.load_from import load_from_s3
+from custom_libs.save_to import save_to_s3
 
 
 def enrich_aircraft_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -111,6 +111,28 @@ def add_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_cyclical_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Encodage cyclique (sin/cos) - CRUCIAL pour la perf"""
+    df = df.copy()
+    df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24)
+    df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24)
+    df["dayofweek_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7)
+    df["dayofweek_cos"] = np.cos(2 * np.pi * df["day_of_week"] / 7)
+    return df
+
+
+def add_period_of_day(df: pd.DataFrame) -> pd.DataFrame:
+    """Période de la journée (feature legacy importante)"""
+    df = df.copy()
+    df["period_of_day"] = pd.cut(
+        df["hour"], 
+        bins=[0, 6, 10, 16, 20, 24],
+        labels=["night", "morning", "afternoon", "evening", "late_night"],
+        right=False
+    )
+    return df
+
+
 def feature_engineering(run_id: str, is_future: bool = False):
     mode = "FUTUR" if is_future else "TRAIN"
     folder = "prediction" if is_future else "train"
@@ -126,6 +148,10 @@ def feature_engineering(run_id: str, is_future: bool = False):
         df = enrich_aircraft_features(df)
         df = add_holiday_features(df)
         df = add_temporal_features(df)
+        
+        # === AJOUTS LEGACY ===
+        df = add_cyclical_features(df)
+        df = add_period_of_day(df)
 
         buffer = io.BytesIO()
         df.to_parquet(buffer, index=False, compression="gzip")
