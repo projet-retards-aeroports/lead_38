@@ -1,6 +1,8 @@
-# ✈️ Projet Retards Aéroports
+# ✈️ Lead 38 - Retards Aéroports
 
-Projet full-stack d'analyse et de prédiction des retards aériens.
+**Version Lead** du projet d'analyse et de prédiction des retards aériens.
+
+Ce dépôt contient l'architecture complète du projet (code source, notebooks, API, application Streamlit et tracking MLflow).
 
 ## 📁 Structure du projet
 
@@ -15,9 +17,8 @@ Projet full-stack d'analyse et de prédiction des retards aériens.
 ## 🚀 Clonage du projet
 
 ```bash
-git clone --recurse-submodules https://github.com/projet-retards-aeroports/full_stack.git
-cd full_stack
-
+git clone --recurse-submodules https://github.com/projet-retards-aeroports/lead_38.git
+cd lead_38
 
 
 🔗 Submodules Hugging Face
@@ -27,21 +28,16 @@ API → https://huggingface.co/spaces/projetLead38/retards_aero_api
 Streamlit → https://huggingface.co/spaces/projetLead38/retards_aero_streamlit
 MLflow → https://huggingface.co/spaces/projetLead38/pl_mlflow
 
+
 🔄 Mettre à jour depuis les dossiers api/, streamlit/ ou mlflow/
 Méthode 1 : Pousser directement sur Hugging Face (recommandée)
-Bash# Aller dans le dossier concerné
-cd api          # ou streamlit / mlflow
-
-# Faire tes modifications, puis :
+Bashcd api          # ou streamlit / mlflow
 git add .
 git commit -m "Description des changements"
 git push
-Méthode 2 : Mettre à jour le lien dans le repo GitHub principal
-Après avoir poussé sur Hugging Face, mets à jour le pointeur du submodule :
-Bash# Revenir à la racine
-cd ~/projets_jedha/prod/retards_aero
-
-git add api          # (ou streamlit / mlflow)
+Méthode 2 : Mettre à jour le lien dans le repo principal
+Bashcd ~/projets_jedha/prod/lead_38     # adapte le chemin si besoin
+git add api
 git commit -m "Update api submodule"
 git push
 
@@ -71,11 +67,8 @@ git push
 
 
 
-
-
-
-
-
-ActionCommandeOù l'exécuterPousser sur GitHubgit add . && git commit -m "msg" && git pushRacinePousser sur Hugging Facegit add . && git commit -m "msg" && git pushDans le submoduleMettre à jour tous les submodulesgit submodule update --remote --mergeRacineRe-cloner avec submodulesgit clone --recurse-submodules <url>—
+ActionCommandeOù l'exécuterPousser sur GitHubgit add . && git commit -m "msg" && git pushRacinePousser sur Hugging Facegit add . && git commit -m "msg" && git pushDans le submoduleMettre à jour tous les submodulesgit submodule update --remote --mergeRacine
 
 Auteur : projetLead38
+Repo Lead : lead_38
+text
