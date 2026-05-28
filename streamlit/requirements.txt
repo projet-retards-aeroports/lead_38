@@ -1,8 +1,0 @@
-streamlit
-pandas
-plotly
-requests
-numpy
-datetime
-dotenv
-boto3

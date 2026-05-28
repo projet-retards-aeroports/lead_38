@@ -1,0 +1,9 @@
+[submodule "streamlit"]
+	path = streamlit
+	url = https://huggingface.co/spaces/projetLead38/retards_aero_streamlit
+[submodule "mlflow"]
+	path = mlflow
+	url = https://huggingface.co/spaces/projetLead38/pl_mlflow
+[submodule "api"]
+	path = api
+	url = https://huggingface.co/spaces/projetLead38/retards_aero_api
